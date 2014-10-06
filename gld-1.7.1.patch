@@ -1,0 +1,739 @@
+diff -ruN gld-1.7/cnf.c gld-1.7.1/cnf.c
+--- gld-1.7/cnf.c	2006-05-01 22:15:30.000000000 +0200
++++ gld-1.7.1/cnf.c	2014-03-09 11:21:25.064548761 +0100
+@@ -48,6 +48,7 @@
+ conf->syslog=1;
+ conf->accept=1;
+ conf->whitelist=1;
++conf->wlbydnsnodes=1;
+ conf->light=0;
+ conf->dnswl[0]=0;
+ conf->loopback=1;
+@@ -87,6 +88,7 @@
+                 if(strcmp(buffer,"SYSLOG")==0) conf->syslog=atoi(p+1);
+                 if(strcmp(buffer,"ERRACCEPT")==0) conf->accept=atoi(p+1);
+                 if(strcmp(buffer,"WHITELIST")==0) conf->whitelist=atoi(p+1);
++                if(strcmp(buffer,"DNSWLBYNODES")==0) conf->wlbydnsnodes=atoi(p+1);
+                 if(strcmp(buffer,"LIGHTGREY")==0) conf->light=atoi(p+1);
+                 if(strcmp(buffer,"LOOPBACKONLY")==0) conf->loopback=atoi(p+1);
+ 		#ifdef HAVE_SYSLOG_H
+@@ -110,6 +112,7 @@
+ if(white==MSGGREYLIST) syslog(LOG_NOTICE,"Greylist activated for recipient=<%s> sender=<%s> ip=<%s>",recipient,sender,ip);
+ if(white==MSGLOCALWL) syslog(LOG_NOTICE,"Local whitelist hit for recipient=<%s> sender=<%s> ip=<%s>",recipient,sender,ip);
+ if(white==MSGDNSWL) syslog(LOG_NOTICE,"DNS whitelist hit for recipient=<%s> sender=<%s> ip=<%s>",recipient,sender,ip);
++if(white==MSGLOCALWLDNS) syslog(LOG_NOTICE,"Local DNS node whitelist hit for recipient=<%s> sender=<%s> %s",recipient,sender,ip);
+ closelog();
+ #endif
+ }
+@@ -123,6 +126,8 @@
+ #endif
+ }
+ 
++// We will need to replace this code, which only supports IPv4 FIXME
++
+ int ReadClients(config *conf,char *str)
+ {
+ char *ptr,*x,*y;
+@@ -192,3 +197,81 @@
+ x=htonl(x);
+ return(x);
+ }
++
++int doubleDNSlookup(char *ip, struct result *dom, config *conf)
++{
++    struct sockaddr_in sa4;
++    struct sockaddr_in6 sa6;
++    struct addrinfo *result;
++    struct addrinfo *res;
++
++    char msg[NI_MAXHOST];
++    char host[NI_MAXHOST];
++    char addr[INET6_ADDRSTRLEN];
++    char *p;
++
++    int error = 0;
++    int nodes = 0;
++    int match = 0;
++
++    /* Use getnameinfo() to find the reverse lookup of the supplied IP address */
++    if (inet_pton(AF_INET6, ip, &sa6.sin6_addr) == 1) { /* IPv6 address? */
++    	sa6.sin6_family = AF_INET6;
++	error = getnameinfo((struct sockaddr *)&sa6, sizeof(sa6), host, sizeof(host), NULL, 0, NI_NAMEREQD);
++    } else { /* IPv4 */
++    	sa4.sin_family = AF_INET;
++    	inet_pton(AF_INET, ip, &sa4.sin_addr);
++	error = getnameinfo((struct sockaddr *)&sa4, sizeof(sa4), host, sizeof(host), NULL, 0, NI_NAMEREQD);
++    }
++
++    if (error) {
++	if (conf->debug == 1) printf("Could not resolve \"%s\" (%s)\n", ip, gai_strerror(error));
++	return(0); /* Name resolution failed */
++    } else {
++	if (conf->debug == 1) printf("Name queuery returned \"%s\"\n", host);
++	/* Extract nodes from the domain name, start from left and extract at most MAXLEVEL nodes */
++	for (p = strchr(host, '.'); p != NULL; p = strchr(p + 1, '.')) {
++		strncpy(dom->domain[nodes++], p, NI_MAXHOST-1);
++		if (conf->debug == 1) printf("Found node \"%s\"\n", p);
++		if (nodes == MAXLEVEL) {
++			if (conf->debug == 1) printf("Reached MAXLEVEL on nodes.\n");
++			break;
++		}
++	}
++	if (nodes == 1) {
++		strncpy(dom->domain[nodes++], host, NI_MAXHOST-1);
++		if (conf->debug == 1) printf("Only found a TLD node, adding \"%s\"\n", host);
++    	}
++    }
++
++    /* We could resolve IP to a PTR RR, try to get a A or AAAA RR from the returned PTR RR */
++    error = getaddrinfo(host, NULL, NULL, &result);
++    if (error != 0) {
++	if (error == EAI_SYSTEM) {
++		snprintf(msg, sizeof(msg)-1, "doubleDNSlookup(): error from getaddrinfo: ERRNO %d", errno);
++		ErrorLog(conf, msg);
++        } else {
++		if (conf->debug == 1) printf("Error from getaddrinfo: %s", gai_strerror(error));
++        }   
++        return(0);
++    }
++
++    /* Loop over the returned results and see if the original IP address matches */
++    for (res = result; res != NULL; res = res->ai_next) {
++	switch (res->ai_family) {
++		case AF_INET:
++			p = (char *)&((struct sockaddr_in *) res->ai_addr)->sin_addr;
++			break;
++		case AF_INET6:
++			p = (char *)&((struct sockaddr_in6 *) res->ai_addr)->sin6_addr;
++			break;
++	}
++	inet_ntop(res->ai_family, p, addr, INET6_ADDRSTRLEN);
++	if (conf->debug == 1) printf("IPv%d address: %s (%s)\n", res->ai_family == PF_INET6 ? 6 : 4, addr, (!strncmp(ip, addr, strlen(ip))) ? "match" : "no match");
++	if (!strncmp(ip, addr, strlen(ip))) 
++		match++;
++    }
++    freeaddrinfo(result);
++    dom->total = nodes;
++    return(match);
++}
+diff -ruN gld-1.7/gld.conf gld-1.7.1/gld.conf
+--- gld-1.7/gld.conf	2006-05-01 22:15:52.000000000 +0200
++++ gld-1.7.1/gld.conf	2014-03-08 08:37:25.447433523 +0100
+@@ -18,6 +18,8 @@
+ # 
+ # comment the line to deactivate it.
+ #
++# (FIXME: IPv6 clients is not yet supported)
++#
+ CLIENTS=127.0.0.1/32
+ 
+ #
+@@ -33,7 +35,7 @@
+ GROUP=nobody
+ 
+ #
+-# Maximum simultaneous connexions (default is 100)
++# Maximum simultaneous connections (default is 100)
+ #
+ MAXCON=100
+ 
+@@ -49,6 +51,8 @@
+ # The lightgrey option, mask the last octet of IP addresses
+ # and thus we greylist only C classes (/24) instead of individual IPs.
+ #
++# (FIXME: IPv6 clients is not yet supported)
++#
+ LIGHTGREY=0
+ 
+ #
+@@ -95,6 +99,25 @@
+ WHITELIST=1
+ 
+ #
++# Use whitelist by DNS nodes? (IPv4 and IPv6 ready)
++#
++# A reverse DNS lookup is done on the connecting IP and up to 5 levels of domain nodes
++# are extracted, a new DNS lookup is done on the result and if the A or AAAA resource
++# record returned matches the initial IP, a lookup is one on the nodes (domain name)
++# in the whitelist.
++#
++# Example:
++#
++# 1. A SMTP server with the IP address "2a00:1450:400c:c03::229" connects
++# 2. A DNS lookup is done on 2a00:1450:400c:c03::229"
++# 3. Up to 5 DNS nodes is extraced from the reply (.google.com, .com)
++# 4. A new DNS lookup is done on the result, if the returned A or AAAA query
++#    matches the IP address in step 1, the whitelist will be searched for
++#    the DNS nodes extracted from the first lookup. (.google.com, .com)
++#
++DNSWLBYNODES=1
++
++#
+ # Shall we use a DNS based whitelist ? (default is no)
+ #
+ # To activate it, the line must be uncommented
+@@ -103,7 +126,11 @@
+ # then gld will DNS lookup d.c.b.a.toto.com
+ # and if found allow the ip without greylisting it.
+ # 
+-#DNSWL=toto.com
++# Several DNS whitelists can be used. They should be separated by a space
++#
++# (FIXME: IPv6 lookups is not working yet)
++#
++DNSWL=swl.spamhaus.org list.dnswl.org
+ 
+ #
+ # Shall we send a 'dunno' in case of error (mysql down,....) (0=No,1=Yes) (default is 1)
+diff -ruN gld-1.7/gld.h gld-1.7.1/gld.h
+--- gld-1.7/gld.h	2006-05-01 22:27:48.000000000 +0200
++++ gld-1.7.1/gld.h	2014-03-04 20:34:26.946032417 +0100
+@@ -11,6 +11,7 @@
+ #include <sys/shm.h>
+ #include <sys/types.h>
+ #include <sys/wait.h>
++#include <errno.h>
+ 
+ #include <pwd.h>
+ #include <grp.h>
+@@ -36,8 +37,20 @@
+ #define MSGGREYLIST	0
+ #define MSGLOCALWL	1
+ #define MSGDNSWL	2
++#define MSGLOCALWLDNS	3
+ 
+-#define VERSION "1.7"
++#define VERSION "1.7.1"
++
++#ifndef   NI_MAXHOST
++#define   NI_MAXHOST 1025
++#endif
++
++#define MAXLEVEL 5
++
++struct result {
++	int total;
++	char domain[MAXLEVEL][NI_MAXHOST];
++};
+ 
+ typedef struct network
+ {
+@@ -53,6 +66,7 @@
+ 	int syslog;			// Shall we write to the syslog
+ 	int accept;			// Shall we return OK in case of error
+ 	int whitelist;			// Shall we lookup the whitelist table
++	int wlbydnsnodes;		// Shall we use whitelisting by DNS nodes? E.g. .google.com
+ 	int light;			// Shall we use light greylisting ?
+ 	int facility;			// Syslog facility to use
+ 	int loopback;			// Shall we bind only to loopback
+@@ -92,3 +106,4 @@
+ int CheckIP(config *conf,char *ip);
+ unsigned long CidrMsk(int msk);
+ int MyDaemon(int nochdir, int noclose);
++int doubleDNSlookup(char *ip, struct result *dom, config *conf);
+diff -ruN gld-1.7/greylist.c gld-1.7.1/greylist.c
+--- gld-1.7/greylist.c	2005-09-16 11:52:41.000000000 +0200
++++ gld-1.7.1/greylist.c	2014-03-09 11:24:07.182865416 +0100
+@@ -8,16 +8,17 @@
+ long n,x;
+ int ts;
+ char *domain;
+-char netw[32];
++char netw[BLEN];
+ int i,l;
+-char oip[32];
++char oip[BLEN];
+ int a,b,c,d;
+ int pid;
+ char osender[BLEN];
+ char orecipient[BLEN];
++struct result found;
++struct in6_addr ip6result;
+ 
+ pid=getpid();
+-
+ ts=time(0);
+ strncpy(oip,ip,sizeof(oip)-1);
+ strncpy(osender,sender,sizeof(osender)-1);
+@@ -26,9 +27,9 @@
+ if(conf->debug==1) printf("%d: Starting the greylist algo\n",pid);
+ 
+ //
+-// If we do lightgreylisting, then we just keep the network part of ip
++// If we do lightgreylisting, then we just keep the network part of ip (FIXME: IPv6)
+ //
+-if(conf->light==1)
++if ((conf->light==1) && (inet_pton(AF_INET6, oip, &ip6result) != 1))
+ {
+ 	if(conf->debug==1) printf("%d: lightgrey is on, let's remove the last octet of ip\n",pid);
+ 	l=strlen(ip);
+@@ -46,7 +47,7 @@
+ //
+ // Do we have this entry in our database?
+ //
+-snprintf(query,sizeof(query)-1,"select first from greylist where ip='%s' and sender='%s' and recipient='%s'",ip,sender,recipient);
++snprintf(query,sizeof(query)-1,"SELECT first FROM greylist WHERE ip='%s' AND sender='%s' AND recipient='%s'",ip,sender,recipient);
+ n=SQLQuery(query);
+ if(conf->debug==1) printf("%d: Query=(%s) result=%ld\n",pid,query,n);
+ 
+@@ -66,7 +67,7 @@
+ 	// and mintime+, always update last timestamp (cleanup needs this) and accept it
+ 	if(ts-n>conf->mini)
+ 	{
+-		snprintf(query,sizeof(query)-1,"update greylist set last=%d,n=n+1 where ip='%s' and sender='%s' and recipient='%s'",ts,ip,sender,recipient);
++		snprintf(query,sizeof(query)-1,"UPDATE greylist SET last=%d,n=n+1 WHERE ip='%s' AND sender='%s' AND recipient='%s'",ts,ip,sender,recipient);
+ 		SQLQuery(query);
+ 		if(conf->debug==1) printf("%d: Query=(%s)\n",pid,query);
+ 		return(1);
+@@ -96,18 +97,18 @@
+ 	domain=(char *)strstr(osender,"@");
+ 	if(domain==NULL) domain=osender;
+ 
+-	strncpy(netw,oip,sizeof(netw)-1);
+-	l=strlen(netw);
+-	for(i=l-1;i>=0;i--)
+-	{
+-		if(netw[i]=='.')
+-		{
+-			netw[i]=0;
+-			break;
++	if (inet_pton(AF_INET6, oip, &ip6result) != 1) { /* FIXME: Only IPv4 */
++		strncpy(netw,oip,sizeof(netw)-1);
++		l=strlen(netw);
++		for(i=l-1;i>=0;i--) {
++			if(netw[i]=='.') {
++				netw[i]=0;
++				break;
++			}
+ 		}
+ 	}
+ 
+-	snprintf(query,sizeof(query)-1,"select count(mail) from whitelist where mail in ('%s','%s','%s','%s')",osender,domain,oip,netw);
++	snprintf(query, sizeof(query)-1, "SELECT COUNT(mail) FROM whitelist WHERE mail IN ('%s', '%s', '%s', '%s')", osender, domain, oip, netw);
+ 	n=SQLQuery(query);
+ 	if(conf->debug==1) printf("%d: Query=(%s) result=%ld\n",pid,query,n);
+ 	if(n>0)
+@@ -117,31 +118,68 @@
+ 	}
+ }
+ 
++if (conf->wlbydnsnodes == 1) {
++	/* If oip resolves to xyz.google.com and xyz.google.com resolves to oip,
++	   search whitelist for .google.com, if no match, return NULL */
++	if (conf->debug==1) printf("%d: whitelist by DNS node is on\n", pid);
++	if (conf->debug==1) printf("%d: doing double DNS lookup on \"%s\"\n", pid, oip);
++	if ((i = doubleDNSlookup(oip, &found, conf)) != 0) {
++		if (conf->debug==1)printf("%d: found %d matching IP addresses\n", pid, i);
++		if (found.total != 0) {
++			if (conf->debug==1) printf("%d: found %d domains\n", pid, found.total);
++			snprintf(query, sizeof(query)-1, "SELECT COUNT(mail) FROM whitelist WHERE mail IN (");
++			for (i = 0; i < found.total; i++) {
++				if (conf->debug==1) printf("%d: Adding node = %s\n", pid, found.domain[i]);
++				strcat(query, "'"); /* 'tld.cc' */
++				strncat(query, found.domain[i], 255);
++				if (i == (found.total - 1)) /* Last? */
++					strcat(query, "'");
++				else
++					strcat(query, "', ");
++			}
++			strcat(query, ")");
++			n=SQLQuery(query);
++			if (conf->debug==1) printf("%d: Query=(%s) result=%ld\n", pid, query, n);
++			if (n > 0) {
++				snprintf(query, sizeof(query)-1, "ip=<%s> dns=<%s>", oip, found.domain[0]);
++				if (conf->syslog==1) Log(conf, orecipient, osender, query, MSGLOCALWLDNS);
++				return(1);
++			}
++		} else
++			if (conf->debug==1) printf("%d: found NO nodes\n", pid);
++	} else {
++		if (conf->debug==1) printf("%d: Could not resolve \"%s\".\n", pid, oip);
++	}
++}
++
+ //
+-// then we check the DNS whitelist
+-//
+-if(conf->dnswl[0]!=0)
+-{
+-	if(conf->debug==1) printf("%d: DNS whitelist is on\n",pid);
+-	x=sscanf(oip,"%d.%d.%d.%d",&a,&b,&c,&d);
+-	if(x==4)
+-	{
+-		snprintf(query,sizeof(query)-1,"%d.%d.%d.%d.%s",d,c,b,a,conf->dnswl);
+-		n=DnsIp(query,NULL);
+-		if(conf->debug==1) printf("%d: DNSQuery=(%s) result=%ld\n",pid,query,n);
+-		if(n==0)
+-		{
+-			if(conf->syslog==1) Log(conf,orecipient,osender,oip,MSGDNSWL);
+-			return(1);
++// then we check the DNS whitelist (FIXME: IPv6)
++//
++
++if ((conf->dnswl[0]!=0) && (inet_pton(AF_INET6, oip, &ip6result) != 1))
++{
++	if (conf->debug==1) printf("%d: DNS whitelist is on\n",pid);
++	x = sscanf(oip,"%d.%d.%d.%d",&a,&b,&c,&d);
++	if (x==4) { // We need to parse and count the number elements in the conf->dnswl variable
++		char *token;
++		token = strtok(conf->dnswl, " "); /* get the first token */
++		while (token != NULL) { /* walk through other tokens */
++			snprintf(query,sizeof(query)-1,"%d.%d.%d.%d.%s",d,c,b,a,token);
++			n=DnsIp(query,NULL);
++			if (conf->debug==1) printf("%d: DNSQuery=(%s) result=%ld\n",pid,query,n);
++			if (n==0) {
++				if (conf->syslog==1) Log(conf,orecipient,osender,oip,MSGDNSWL);
++				return(1);
++			}
++			token = strtok(NULL, " ");
+ 		}
+ 	}
+ }
+-
+ //
+ // If we are here, The mail was not in our database
+ // was not whitelisted and thus we have to insert it
+ //
+-snprintf(query,sizeof(query)-1,"insert into greylist values('%s','%s','%s',%d,%d,1)",ip,sender,recipient,ts,ts);
++snprintf(query,sizeof(query)-1,"INSERT INTO greylist VALUES('%s','%s','%s',%d,%d,1)",ip,sender,recipient,ts,ts);
+ SQLQuery(query);
+ if(conf->debug==1) printf("%d: Query=(%s)\n",pid,query);
+ 
+@@ -152,7 +190,7 @@
+ if(conf->mxgrey>0)
+ {
+ 	// check for unique triplets already graylisted from the IP
+-	snprintf(query,sizeof(query)-1,"select count(first) from greylist where ip='%s' and n>1",ip);
++	snprintf(query,sizeof(query)-1,"SELECT COUNT(first) FROM greylist WHERE ip='%s' AND n>1",ip);
+ 	n=SQLQuery(query);
+ 	if(conf->debug==1) printf("%d: Mxgrey Query=(%s) result=%ld (minimum needed is %d)\n",pid,query,n,conf->mxgrey);
+ 	// if found, accept it
+@@ -165,4 +203,3 @@
+ return(0);
+ 
+ }
+-
+diff -ruN gld-1.7/server.c gld-1.7.1/server.c
+--- gld-1.7/server.c	2006-05-01 22:43:10.000000000 +0200
++++ gld-1.7.1/server.c	2014-03-08 08:38:43.834642640 +0100
+@@ -17,7 +17,9 @@
+ 
+ if(argc==2 && strcmp(argv[1],"-v")==0)
+ 	{
+-	printf("gld %s <salim@gasmi.net> <http://www.gasmi.net>\n",VERSION);
++	printf("gld %s <salim@gasmi.net> <http://www.gasmi.net>\n\
++IPv6 and support for multiple DNS whitelists adapted from gld-ng (<patrick@vande-walle.eu>) by <fredrik@xpd.se>\n\
++DNS nodes double lookup whitelist by <fredrik@xpd.se>\n",VERSION);
+ 	exit(0);
+ 	}
+ 
+@@ -115,10 +117,10 @@
+ 		}
+ 
+ 	if(clean==1 || clean==2)
+-	snprintf(query,sizeof(query)-1,"select count(last) from greylist where last < UNIX_TIMESTAMP()-86400*%d",atoi(argv[2]));
++	snprintf(query,sizeof(query)-1,"SELECT COUNT(last) FROM greylist WHERE last < UNIX_TIMESTAMP()-86400*%d",atoi(argv[2]));
+ 
+ 	if(clean==3 || clean==4)
+-	snprintf(query,sizeof(query)-1,"select count(last) from greylist where last < UNIX_TIMESTAMP()-86400*%d AND n=1",atoi(argv[2]));
++	snprintf(query,sizeof(query)-1,"SELECT COUNT(last) FROM greylist WHERE last < UNIX_TIMESTAMP()-86400*%d AND n=1",atoi(argv[2]));
+ 
+         c=SQLQuery(query);
+ 
+@@ -129,8 +131,8 @@
+ 		exit(0);
+ 		}
+ 
+-	if(clean==1) snprintf(query,sizeof(query)-1,"delete from greylist where last < UNIX_TIMESTAMP()-86400*%d",atoi(argv[2]));
+-	if(clean==3) snprintf(query,sizeof(query)-1,"delete from greylist where last < UNIX_TIMESTAMP()-86400*%d and n=1",atoi(argv[2]));
++	if(clean==1) snprintf(query,sizeof(query)-1,"DELETE FROM greylist WHERE last < UNIX_TIMESTAMP()-86400*%d",atoi(argv[2]));
++	if(clean==3) snprintf(query,sizeof(query)-1,"DELETE FROM greylist WHERE last < UNIX_TIMESTAMP()-86400*%d and n=1",atoi(argv[2]));
+         SQLQuery(query);
+ 	SQLClose();
+ 
+@@ -156,7 +158,7 @@
+ 
+ if(conf.syslog==1) ErrorLog(&conf,"gld started, up and running");
+ if(conf.debug==0) MyDaemon(0,0);
+-if(conf.debug==1) printf("Waiting for incoming connexions\n");
++if(conf.debug==1) printf("Waiting for incoming connections\n");
+ 
+ //
+ // The main loop
+@@ -194,7 +196,9 @@
+ char recipient[BLEN];
+ char ip[BLEN];
+ int n;
++#if 0
+ long ts;
++#endif
+ int pid;
+ 
+ pid=getpid();
+@@ -218,10 +222,10 @@
+ 
+ if(CheckIP(cnf,ip)!=1)
+ 	{
+-	if(cnf->debug==1) printf("%d: Rejected New incoming connexion from %s (%s)\n",pid,buff,ip);
++	if(cnf->debug==1) printf("%d: Rejected New incoming connection from %s (%s)\n",pid,buff,ip);
+ 	if(cnf->syslog==1)
+ 		{
+-		snprintf(buff,sizeof(buff)-1,"Rejected New incoming connexion from %s (%s)\n",buff,ip);
++		snprintf(buff,sizeof(buff)-1,"Rejected New incoming connection from %s (%s)\n",buff,ip);
+ 		ErrorLog(cnf,buff);
+ 		}
+ 
+@@ -233,9 +237,11 @@
+ // Ok, The IP is accepted
+ //
+ 
+-if(cnf->debug==1) printf("%d: New incoming connexion from %s (%s)\n",pid,buff,ip);
++if(cnf->debug==1) printf("%d: New incoming connection from %s (%s)\n",pid,buff,ip);
+ 
++#if 0
+ ts=time(0);
++#endif
+ 
+ request[0]=sender[0]=recipient[0]=ip[0]=0;
+ 
+@@ -377,6 +383,7 @@
+ int MyDaemon(int nochdir, int noclose)
+ {
+ int fd;
++int unused __attribute__((unused));
+ 
+ switch (fork()) {
+         case -1:
+@@ -388,7 +395,7 @@
+ }
+ 
+ if(setsid() == -1) return(-1);
+-if(!nochdir) (void)chdir("/");
++if(!nochdir) unused = chdir("/");
+ 
+ if(!noclose && (fd = open("/dev/null", O_RDWR, 0)) != -1)
+         {
+diff -ruN gld-1.7/sockets.c gld-1.7.1/sockets.c
+--- gld-1.7/sockets.c	2004-10-12 14:39:34.000000000 +0200
++++ gld-1.7.1/sockets.c	2014-03-04 20:27:36.354114821 +0100
+@@ -491,7 +491,7 @@
+ 
+ if (nfds > 0)
+     {
+-           nbytes=recvfrom(s,buffer,maxsize,0,(struct sockaddr *)0,(int *)0);
++           nbytes=recvfrom(s,buffer,maxsize,0,(struct sockaddr *)0,(socklen_t *)0);
+            if(nbytes<0) return(S_RECV_ERR); else return(nbytes);
+     }
+     else return(S_TIME_ERR);
+@@ -640,7 +640,7 @@
+ strcpy(ipfrom,"???.???.???.???");
+ strcpy(hostfrom,"?????");
+ 
+-if (getpeername(sock,(struct sockaddr *)&from, &foo) == 0)
++if (getpeername(sock,(struct sockaddr *)&from, (socklen_t *)&foo) == 0)
+      {
+      strcpy(ipfrom,(char *)inet_ntoa(from.sin_addr));
+      hostptr=(struct hostent *)gethostbyaddr((char *)&from.sin_addr,sizeof(struct in_addr),AF_INET);
+@@ -723,7 +723,7 @@
+ {
+ 
+ size_t foo=sizeof(serv.sin);
+-return(accept(serv.sd,(struct sockaddr *)&(serv.sin),&foo));
++return(accept(serv.sd,(struct sockaddr *)&(serv.sin),(socklen_t *)&foo));
+ }
+ 
+ /************************************************/
+diff -ruN gld-1.7/tables.mysql gld-1.7.1/tables.mysql
+--- gld-1.7/tables.mysql	2004-09-01 13:39:55.000000000 +0200
++++ gld-1.7.1/tables.mysql	2014-03-08 08:40:43.717432833 +0100
+@@ -1,5 +1,5 @@
+ CREATE TABLE greylist (
+-  ip char(16) NOT NULL default '',
++  ip char(64) NOT NULL default '',
+   sender char(242) NOT NULL default '',
+   recipient char(242) NOT NULL default '',
+   first int(11) NOT NULL default '0',
+diff -ruN gld-1.7/tables.pgsql gld-1.7.1/tables.pgsql
+--- gld-1.7/tables.pgsql	2004-10-12 14:51:18.000000000 +0200
++++ gld-1.7.1/tables.pgsql	2014-03-09 11:01:26.960951215 +0100
+@@ -1,5 +1,5 @@
+ CREATE TABLE greylist (
+-  ip char(16) NOT NULL default '',
++  ip char(64) NOT NULL default '',
+   sender char(242) NOT NULL default '',
+   recipient char(242) NOT NULL default '',
+   first bigint NOT NULL default '0',
+diff -ruN gld-1.7/table-whitelist.sql gld-1.7.1/table-whitelist.sql
+--- gld-1.7/table-whitelist.sql	2005-09-16 11:54:56.000000000 +0200
++++ gld-1.7.1/table-whitelist.sql	2014-03-09 11:08:26.708610878 +0100
+@@ -1,169 +1 @@
+-INSERT INTO whitelist VALUES ('12.5.136.141','Southwest');
+-INSERT INTO whitelist VALUES ('12.5.136.142','Southwest');
+-INSERT INTO whitelist VALUES ('12.107.209.244','kernel.org');
+-INSERT INTO whitelist VALUES ('12.107.209.250','sourceware.org');
+-INSERT INTO whitelist VALUES ('63.82.37.110','SLmail');
+-INSERT INTO whitelist VALUES ('64.7.153.18','sentex.ca');
+-INSERT INTO whitelist VALUES ('64.12.137','AOL');
+-INSERT INTO whitelist VALUES ('64.12.138','AOL');
+-INSERT INTO whitelist VALUES ('64.124.204.39','moveon.org');
+-INSERT INTO whitelist VALUES ('64.125.132.254','collab.net');
+-INSERT INTO whitelist VALUES ('66.100.210.82','Groupwise?');
+-INSERT INTO whitelist VALUES ('66.135.209','Ebay');
+-INSERT INTO whitelist VALUES ('66.135.197','Ebay');
+-INSERT INTO whitelist VALUES ('66.162.216.166','Groupwise?');
+-INSERT INTO whitelist VALUES ('66.206.22.82','PLEXOR');
+-INSERT INTO whitelist VALUES ('66.206.22.83','PLEXOR');
+-INSERT INTO whitelist VALUES ('66.206.22.84','PLEXOR');
+-INSERT INTO whitelist VALUES ('66.206.22.85','PLEXOR');
+-INSERT INTO whitelist VALUES ('66.218.66','Yahoo');
+-INSERT INTO whitelist VALUES ('66.218.67','Yahoo');
+-INSERT INTO whitelist VALUES ('66.218.69','Yahoo');
+-INSERT INTO whitelist VALUES ('66.27.51.218','ljbtc.com');
+-INSERT INTO whitelist VALUES ('152.163.225','AOL');
+-INSERT INTO whitelist VALUES ('194.245.101.88','Joker.com');
+-INSERT INTO whitelist VALUES ('195.235.39.19','Tid');
+-INSERT INTO whitelist VALUES ('195.238.2.105','skynet.be');
+-INSERT INTO whitelist VALUES ('195.238.2.124','skynet.be');
+-INSERT INTO whitelist VALUES ('195.238.3.12','skynet.be');
+-INSERT INTO whitelist VALUES ('195.238.3.13','skynet.be');
+-INSERT INTO whitelist VALUES ('204.107.120.10','Ameritrade');
+-INSERT INTO whitelist VALUES ('205.188.139.136','AOL');
+-INSERT INTO whitelist VALUES ('205.188.139.137','AOL');
+-INSERT INTO whitelist VALUES ('205.188.144.207','AOL');
+-INSERT INTO whitelist VALUES ('205.188.144.208','AOL');
+-INSERT INTO whitelist VALUES ('205.188.156.66','AOL');
+-INSERT INTO whitelist VALUES ('205.188.157','AOL');
+-INSERT INTO whitelist VALUES ('205.188.159.7','AOL');
+-INSERT INTO whitelist VALUES ('205.206.231','SecurityFocus.com');
+-INSERT INTO whitelist VALUES ('205.211.164.50','sentex.ca');
+-INSERT INTO whitelist VALUES ('207.115.63','Prodigy');
+-INSERT INTO whitelist VALUES ('207.171.168','Amazon.com');
+-INSERT INTO whitelist VALUES ('207.171.180','Amazon.com');
+-INSERT INTO whitelist VALUES ('207.171.187','Amazon.com');
+-INSERT INTO whitelist VALUES ('207.171.188','Amazon.com');
+-INSERT INTO whitelist VALUES ('207.171.190','Amazon.com');
+-INSERT INTO whitelist VALUES ('211.29.132','optusnet.com.au');
+-INSERT INTO whitelist VALUES ('213.136.52.31','Mysql.com');
+-INSERT INTO whitelist VALUES ('217.158.50.178','AXKit');
+-INSERT INTO whitelist VALUES ('216.239.56.240','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.241','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.242','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.243','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.244','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.245','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.246','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.247','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.248','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.249','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.250','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.251','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.252','Googlemail');
+-INSERT INTO whitelist VALUES ('216.239.56.253','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.192','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.193','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.194','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.195','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.196','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.197','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.198','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.199','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.200','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.201','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.202','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.203','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.204','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.205','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.206','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.162.207','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.192','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.193','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.194','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.195','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.196','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.197','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.198','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.199','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.200','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.201','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.202','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.203','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.204','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.205','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.206','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.170.207','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.192','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.193','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.194','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.195','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.196','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.197','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.198','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.199','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.200','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.201','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.202','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.203','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.204','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.205','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.206','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.182.207','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.192','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.193','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.194','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.195','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.196','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.197','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.198','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.199','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.200','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.201','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.202','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.203','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.204','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.205','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.206','Googlemail');
+-INSERT INTO whitelist VALUES ('64.233.184.207','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.192','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.193','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.194','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.195','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.196','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.197','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.198','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.199','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.200','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.201','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.202','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.203','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.204','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.205','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.206','Googlemail');
+-INSERT INTO whitelist VALUES ('66.249.82.207','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.192','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.193','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.194','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.195','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.196','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.197','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.198','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.199','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.200','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.201','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.202','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.203','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.204','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.205','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.206','Googlemail');
+-INSERT INTO whitelist VALUES ('72.14.204.207','Googlemail');
+-INSERT INTO whitelist VALUES ('204.15.82.20','SpamCop');
+-INSERT INTO whitelist VALUES ('204.15.82.21','SpamCop');
+-INSERT INTO whitelist VALUES ('204.15.82.22','SpamCop');
+-INSERT INTO whitelist VALUES ('204.15.82.23','SpamCop');
+-INSERT INTO whitelist VALUES ('204.15.82.24','SpamCop');
+-INSERT INTO whitelist VALUES ('204.15.82.25','SpamCop');
+-INSERT INTO whitelist VALUES ('204.15.82.26','SpamCop');
+-INSERT INTO whitelist VALUES ('204.15.82.27','SpamCop');
+-INSERT INTO whitelist VALUES ('204.15.82.28','SpamCop');
+-INSERT INTO whitelist VALUES ('204.15.82.29','SpamCop');
+-INSERT INTO whitelist VALUES ('204.15.82.30','SpamCop');
++INSERT INTO whitelist VALUES ('.google.com','Googlemail');
