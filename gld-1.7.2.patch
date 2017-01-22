@@ -1,6 +1,6 @@
-diff -ruN gld-1.7/cnf.c gld-1.7.1/cnf.c
+diff -ruN gld-1.7/cnf.c gld-1.7.2/cnf.c
 --- gld-1.7/cnf.c	2006-05-01 22:15:30.000000000 +0200
-+++ gld-1.7.1/cnf.c	2014-03-09 11:21:25.064548761 +0100
++++ gld-1.7.2/cnf.c	2017-01-22 16:02:33.000000000 +0100
 @@ -48,6 +48,7 @@
  conf->syslog=1;
  conf->accept=1;
@@ -34,10 +34,11 @@ diff -ruN gld-1.7/cnf.c gld-1.7.1/cnf.c
  int ReadClients(config *conf,char *str)
  {
  char *ptr,*x,*y;
-@@ -192,3 +197,81 @@
+@@ -192,3 +197,96 @@
  x=htonl(x);
  return(x);
  }
++
 +
 +int doubleDNSlookup(char *ip, struct result *dom, config *conf)
 +{
@@ -50,10 +51,12 @@ diff -ruN gld-1.7/cnf.c gld-1.7.1/cnf.c
 +    char host[NI_MAXHOST];
 +    char addr[INET6_ADDRSTRLEN];
 +    char *p;
++    static char rfc1123_chars[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890_-.";
 +
 +    int error = 0;
 +    int nodes = 0;
 +    int match = 0;
++    int sanitize = 0;
 +
 +    /* Use getnameinfo() to find the reverse lookup of the supplied IP address */
 +    if (inet_pton(AF_INET6, ip, &sa6.sin6_addr) == 1) { /* IPv6 address? */
@@ -70,6 +73,18 @@ diff -ruN gld-1.7/cnf.c gld-1.7.1/cnf.c
 +	return(0); /* Name resolution failed */
 +    } else {
 +	if (conf->debug == 1) printf("Name queuery returned \"%s\"\n", host);
++	/* Be paranoid and sanitize result since it's used in a SQL query later. Idea from Tripwire and cert.org. */
++	/* https://www.securecoding.cert.org/confluence/display/c/STR02-C.+Sanitize+data+passed+to+complex+subsystems */
++	char *cp = host;
++	const char *end = host + strlen(host);
++	for (cp += strspn(cp, rfc1123_chars); cp != end; cp += strspn(cp, rfc1123_chars)) {
++		*cp = '-';
++		sanitize++;
++	}
++	if (sanitize > 0) {
++		snprintf(msg, sizeof(msg)-1, "WARNING: Name sanitization returned \"%s\"", host);
++		ErrorLog(conf, msg);
++	}
 +	/* Extract nodes from the domain name, start from left and extract at most MAXLEVEL nodes */
 +	for (p = strchr(host, '.'); p != NULL; p = strchr(p + 1, '.')) {
 +		strncpy(dom->domain[nodes++], p, NI_MAXHOST-1);
@@ -116,9 +131,9 @@ diff -ruN gld-1.7/cnf.c gld-1.7.1/cnf.c
 +    dom->total = nodes;
 +    return(match);
 +}
-diff -ruN gld-1.7/gld.conf gld-1.7.1/gld.conf
+diff -ruN gld-1.7/gld.conf gld-1.7.2/gld.conf
 --- gld-1.7/gld.conf	2006-05-01 22:15:52.000000000 +0200
-+++ gld-1.7.1/gld.conf	2014-03-08 08:37:25.447433523 +0100
++++ gld-1.7.2/gld.conf	2017-01-22 14:59:09.000000000 +0100
 @@ -18,6 +18,8 @@
  # 
  # comment the line to deactivate it.
@@ -185,9 +200,9 @@ diff -ruN gld-1.7/gld.conf gld-1.7.1/gld.conf
  
  #
  # Shall we send a 'dunno' in case of error (mysql down,....) (0=No,1=Yes) (default is 1)
-diff -ruN gld-1.7/gld.h gld-1.7.1/gld.h
+diff -ruN gld-1.7/gld.h gld-1.7.2/gld.h
 --- gld-1.7/gld.h	2006-05-01 22:27:48.000000000 +0200
-+++ gld-1.7.1/gld.h	2014-03-04 20:34:26.946032417 +0100
++++ gld-1.7.2/gld.h	2017-01-22 15:39:04.000000000 +0100
 @@ -11,6 +11,7 @@
  #include <sys/shm.h>
  #include <sys/types.h>
@@ -203,7 +218,7 @@ diff -ruN gld-1.7/gld.h gld-1.7.1/gld.h
 +#define MSGLOCALWLDNS	3
  
 -#define VERSION "1.7"
-+#define VERSION "1.7.1"
++#define VERSION "1.7.2"
 +
 +#ifndef   NI_MAXHOST
 +#define   NI_MAXHOST 1025
@@ -231,9 +246,9 @@ diff -ruN gld-1.7/gld.h gld-1.7.1/gld.h
  unsigned long CidrMsk(int msk);
  int MyDaemon(int nochdir, int noclose);
 +int doubleDNSlookup(char *ip, struct result *dom, config *conf);
-diff -ruN gld-1.7/greylist.c gld-1.7.1/greylist.c
+diff -ruN gld-1.7/greylist.c gld-1.7.2/greylist.c
 --- gld-1.7/greylist.c	2005-09-16 11:52:41.000000000 +0200
-+++ gld-1.7.1/greylist.c	2014-03-09 11:24:07.182865416 +0100
++++ gld-1.7.2/greylist.c	2017-01-22 14:59:09.000000000 +0100
 @@ -8,16 +8,17 @@
  long n,x;
  int ts;
@@ -413,9 +428,9 @@ diff -ruN gld-1.7/greylist.c gld-1.7.1/greylist.c
  
  }
 -
-diff -ruN gld-1.7/server.c gld-1.7.1/server.c
+diff -ruN gld-1.7/server.c gld-1.7.2/server.c
 --- gld-1.7/server.c	2006-05-01 22:43:10.000000000 +0200
-+++ gld-1.7.1/server.c	2014-03-08 08:38:43.834642640 +0100
++++ gld-1.7.2/server.c	2017-01-22 14:59:09.000000000 +0100
 @@ -17,7 +17,9 @@
  
  if(argc==2 && strcmp(argv[1],"-v")==0)
@@ -513,9 +528,9 @@ diff -ruN gld-1.7/server.c gld-1.7.1/server.c
  
  if(!noclose && (fd = open("/dev/null", O_RDWR, 0)) != -1)
          {
-diff -ruN gld-1.7/sockets.c gld-1.7.1/sockets.c
+diff -ruN gld-1.7/sockets.c gld-1.7.2/sockets.c
 --- gld-1.7/sockets.c	2004-10-12 14:39:34.000000000 +0200
-+++ gld-1.7.1/sockets.c	2014-03-04 20:27:36.354114821 +0100
++++ gld-1.7.2/sockets.c	2017-01-22 14:59:09.000000000 +0100
 @@ -491,7 +491,7 @@
  
  if (nfds > 0)
@@ -543,29 +558,9 @@ diff -ruN gld-1.7/sockets.c gld-1.7.1/sockets.c
  }
  
  /************************************************/
-diff -ruN gld-1.7/tables.mysql gld-1.7.1/tables.mysql
---- gld-1.7/tables.mysql	2004-09-01 13:39:55.000000000 +0200
-+++ gld-1.7.1/tables.mysql	2014-03-08 08:40:43.717432833 +0100
-@@ -1,5 +1,5 @@
- CREATE TABLE greylist (
--  ip char(16) NOT NULL default '',
-+  ip char(64) NOT NULL default '',
-   sender char(242) NOT NULL default '',
-   recipient char(242) NOT NULL default '',
-   first int(11) NOT NULL default '0',
-diff -ruN gld-1.7/tables.pgsql gld-1.7.1/tables.pgsql
---- gld-1.7/tables.pgsql	2004-10-12 14:51:18.000000000 +0200
-+++ gld-1.7.1/tables.pgsql	2014-03-09 11:01:26.960951215 +0100
-@@ -1,5 +1,5 @@
- CREATE TABLE greylist (
--  ip char(16) NOT NULL default '',
-+  ip char(64) NOT NULL default '',
-   sender char(242) NOT NULL default '',
-   recipient char(242) NOT NULL default '',
-   first bigint NOT NULL default '0',
-diff -ruN gld-1.7/table-whitelist.sql gld-1.7.1/table-whitelist.sql
+diff -ruN gld-1.7/table-whitelist.sql gld-1.7.2/table-whitelist.sql
 --- gld-1.7/table-whitelist.sql	2005-09-16 11:54:56.000000000 +0200
-+++ gld-1.7.1/table-whitelist.sql	2014-03-09 11:08:26.708610878 +0100
++++ gld-1.7.2/table-whitelist.sql	2017-01-22 14:59:09.000000000 +0100
 @@ -1,169 +1 @@
 -INSERT INTO whitelist VALUES ('12.5.136.141','Southwest');
 -INSERT INTO whitelist VALUES ('12.5.136.142','Southwest');
@@ -737,3 +732,23 @@ diff -ruN gld-1.7/table-whitelist.sql gld-1.7.1/table-whitelist.sql
 -INSERT INTO whitelist VALUES ('204.15.82.29','SpamCop');
 -INSERT INTO whitelist VALUES ('204.15.82.30','SpamCop');
 +INSERT INTO whitelist VALUES ('.google.com','Googlemail');
+diff -ruN gld-1.7/tables.mysql gld-1.7.2/tables.mysql
+--- gld-1.7/tables.mysql	2004-09-01 13:39:55.000000000 +0200
++++ gld-1.7.2/tables.mysql	2017-01-22 14:59:09.000000000 +0100
+@@ -1,5 +1,5 @@
+ CREATE TABLE greylist (
+-  ip char(16) NOT NULL default '',
++  ip char(64) NOT NULL default '',
+   sender char(242) NOT NULL default '',
+   recipient char(242) NOT NULL default '',
+   first int(11) NOT NULL default '0',
+diff -ruN gld-1.7/tables.pgsql gld-1.7.2/tables.pgsql
+--- gld-1.7/tables.pgsql	2004-10-12 14:51:18.000000000 +0200
++++ gld-1.7.2/tables.pgsql	2017-01-22 14:59:09.000000000 +0100
+@@ -1,5 +1,5 @@
+ CREATE TABLE greylist (
+-  ip char(16) NOT NULL default '',
++  ip char(64) NOT NULL default '',
+   sender char(242) NOT NULL default '',
+   recipient char(242) NOT NULL default '',
+   first bigint NOT NULL default '0',

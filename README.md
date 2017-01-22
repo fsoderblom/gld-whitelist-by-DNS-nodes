@@ -13,11 +13,11 @@ the local copy provided.
 $ tar zxf gld-1.7.tgz
 ```
 
-Apply the gld-1.7.1 patch.
+Apply the gld-1.7.2 patch.
 
 ```
 $ cd gld-1.7
-$ patch -p1 <../gld-1.7.1.patch
+$ patch -p1 <../gld-1.7.2.patch
 patching file cnf.c
 patching file gld.conf
 patching file gld.h
