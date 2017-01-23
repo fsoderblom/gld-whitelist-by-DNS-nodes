@@ -133,7 +133,7 @@ diff -ruN gld-1.7/cnf.c gld-1.7.2/cnf.c
 +}
 diff -ruN gld-1.7/gld.conf gld-1.7.2/gld.conf
 --- gld-1.7/gld.conf	2006-05-01 22:15:52.000000000 +0200
-+++ gld-1.7.2/gld.conf	2017-01-22 14:59:09.000000000 +0100
++++ gld-1.7.2/gld.conf	2017-01-23 21:12:23.000000000 +0100
 @@ -18,6 +18,8 @@
  # 
  # comment the line to deactivate it.
@@ -169,7 +169,7 @@ diff -ruN gld-1.7/gld.conf gld-1.7.2/gld.conf
 +#
 +# A reverse DNS lookup is done on the connecting IP and up to 5 levels of domain nodes
 +# are extracted, a new DNS lookup is done on the result and if the A or AAAA resource
-+# record returned matches the initial IP, a lookup is one on the nodes (domain name)
++# record returned matches the initial IP, a lookup is done on the nodes (domain name)
 +# in the whitelist.
 +#
 +# Example:
