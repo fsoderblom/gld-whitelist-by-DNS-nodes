@@ -1,6 +1,6 @@
-diff -ruN gld-1.7/cnf.c gld-1.7.2/cnf.c
+diff -ru gld-1.7/cnf.c gld-1.7.2/cnf.c
 --- gld-1.7/cnf.c	2006-05-01 22:15:30.000000000 +0200
-+++ gld-1.7.2/cnf.c	2017-01-22 16:02:33.000000000 +0100
++++ gld-1.7.2/cnf.c	2017-01-25 10:37:53.000000000 +0100
 @@ -48,6 +48,7 @@
  conf->syslog=1;
  conf->accept=1;
@@ -131,9 +131,9 @@ diff -ruN gld-1.7/cnf.c gld-1.7.2/cnf.c
 +    dom->total = nodes;
 +    return(match);
 +}
-diff -ruN gld-1.7/gld.conf gld-1.7.2/gld.conf
+diff -ru gld-1.7/gld.conf gld-1.7.2/gld.conf
 --- gld-1.7/gld.conf	2006-05-01 22:15:52.000000000 +0200
-+++ gld-1.7.2/gld.conf	2017-01-23 21:12:23.000000000 +0100
++++ gld-1.7.2/gld.conf	2017-01-25 10:37:53.000000000 +0100
 @@ -18,6 +18,8 @@
  # 
  # comment the line to deactivate it.
@@ -200,9 +200,9 @@ diff -ruN gld-1.7/gld.conf gld-1.7.2/gld.conf
  
  #
  # Shall we send a 'dunno' in case of error (mysql down,....) (0=No,1=Yes) (default is 1)
-diff -ruN gld-1.7/gld.h gld-1.7.2/gld.h
+diff -ru gld-1.7/gld.h gld-1.7.2/gld.h
 --- gld-1.7/gld.h	2006-05-01 22:27:48.000000000 +0200
-+++ gld-1.7.2/gld.h	2017-01-22 15:39:04.000000000 +0100
++++ gld-1.7.2/gld.h	2017-01-25 10:37:53.000000000 +0100
 @@ -11,6 +11,7 @@
  #include <sys/shm.h>
  #include <sys/types.h>
@@ -246,9 +246,9 @@ diff -ruN gld-1.7/gld.h gld-1.7.2/gld.h
  unsigned long CidrMsk(int msk);
  int MyDaemon(int nochdir, int noclose);
 +int doubleDNSlookup(char *ip, struct result *dom, config *conf);
-diff -ruN gld-1.7/greylist.c gld-1.7.2/greylist.c
+diff -ru gld-1.7/greylist.c gld-1.7.2/greylist.c
 --- gld-1.7/greylist.c	2005-09-16 11:52:41.000000000 +0200
-+++ gld-1.7.2/greylist.c	2017-01-22 14:59:09.000000000 +0100
++++ gld-1.7.2/greylist.c	2017-01-25 10:37:53.000000000 +0100
 @@ -8,16 +8,17 @@
  long n,x;
  int ts;
@@ -428,9 +428,9 @@ diff -ruN gld-1.7/greylist.c gld-1.7.2/greylist.c
  
  }
 -
-diff -ruN gld-1.7/server.c gld-1.7.2/server.c
+diff -ru gld-1.7/server.c gld-1.7.2/server.c
 --- gld-1.7/server.c	2006-05-01 22:43:10.000000000 +0200
-+++ gld-1.7.2/server.c	2017-01-22 14:59:09.000000000 +0100
++++ gld-1.7.2/server.c	2017-01-25 10:39:54.000000000 +0100
 @@ -17,7 +17,9 @@
  
  if(argc==2 && strcmp(argv[1],"-v")==0)
@@ -475,17 +475,7 @@ diff -ruN gld-1.7/server.c gld-1.7.2/server.c
  
  //
  // The main loop
-@@ -194,7 +196,9 @@
- char recipient[BLEN];
- char ip[BLEN];
- int n;
-+#if 0
- long ts;
-+#endif
- int pid;
- 
- pid=getpid();
-@@ -218,10 +222,10 @@
+@@ -218,10 +220,10 @@
  
  if(CheckIP(cnf,ip)!=1)
  	{
@@ -498,20 +488,16 @@ diff -ruN gld-1.7/server.c gld-1.7.2/server.c
  		ErrorLog(cnf,buff);
  		}
  
-@@ -233,9 +237,11 @@
+@@ -233,7 +235,7 @@
  // Ok, The IP is accepted
  //
  
 -if(cnf->debug==1) printf("%d: New incoming connexion from %s (%s)\n",pid,buff,ip);
 +if(cnf->debug==1) printf("%d: New incoming connection from %s (%s)\n",pid,buff,ip);
  
-+#if 0
  ts=time(0);
-+#endif
  
- request[0]=sender[0]=recipient[0]=ip[0]=0;
- 
-@@ -377,6 +383,7 @@
+@@ -377,6 +379,7 @@
  int MyDaemon(int nochdir, int noclose)
  {
  int fd;
@@ -519,7 +505,7 @@ diff -ruN gld-1.7/server.c gld-1.7.2/server.c
  
  switch (fork()) {
          case -1:
-@@ -388,7 +395,7 @@
+@@ -388,7 +391,7 @@
  }
  
  if(setsid() == -1) return(-1);
@@ -528,9 +514,9 @@ diff -ruN gld-1.7/server.c gld-1.7.2/server.c
  
  if(!noclose && (fd = open("/dev/null", O_RDWR, 0)) != -1)
          {
-diff -ruN gld-1.7/sockets.c gld-1.7.2/sockets.c
+diff -ru gld-1.7/sockets.c gld-1.7.2/sockets.c
 --- gld-1.7/sockets.c	2004-10-12 14:39:34.000000000 +0200
-+++ gld-1.7.2/sockets.c	2017-01-22 14:59:09.000000000 +0100
++++ gld-1.7.2/sockets.c	2017-01-25 10:37:53.000000000 +0100
 @@ -491,7 +491,7 @@
  
  if (nfds > 0)
@@ -558,9 +544,9 @@ diff -ruN gld-1.7/sockets.c gld-1.7.2/sockets.c
  }
  
  /************************************************/
-diff -ruN gld-1.7/table-whitelist.sql gld-1.7.2/table-whitelist.sql
+diff -ru gld-1.7/table-whitelist.sql gld-1.7.2/table-whitelist.sql
 --- gld-1.7/table-whitelist.sql	2005-09-16 11:54:56.000000000 +0200
-+++ gld-1.7.2/table-whitelist.sql	2017-01-22 14:59:09.000000000 +0100
++++ gld-1.7.2/table-whitelist.sql	2017-01-25 10:37:53.000000000 +0100
 @@ -1,169 +1 @@
 -INSERT INTO whitelist VALUES ('12.5.136.141','Southwest');
 -INSERT INTO whitelist VALUES ('12.5.136.142','Southwest');
@@ -732,9 +718,9 @@ diff -ruN gld-1.7/table-whitelist.sql gld-1.7.2/table-whitelist.sql
 -INSERT INTO whitelist VALUES ('204.15.82.29','SpamCop');
 -INSERT INTO whitelist VALUES ('204.15.82.30','SpamCop');
 +INSERT INTO whitelist VALUES ('.google.com','Googlemail');
-diff -ruN gld-1.7/tables.mysql gld-1.7.2/tables.mysql
+diff -ru gld-1.7/tables.mysql gld-1.7.2/tables.mysql
 --- gld-1.7/tables.mysql	2004-09-01 13:39:55.000000000 +0200
-+++ gld-1.7.2/tables.mysql	2017-01-22 14:59:09.000000000 +0100
++++ gld-1.7.2/tables.mysql	2017-01-25 10:37:53.000000000 +0100
 @@ -1,5 +1,5 @@
  CREATE TABLE greylist (
 -  ip char(16) NOT NULL default '',
@@ -742,9 +728,9 @@ diff -ruN gld-1.7/tables.mysql gld-1.7.2/tables.mysql
    sender char(242) NOT NULL default '',
    recipient char(242) NOT NULL default '',
    first int(11) NOT NULL default '0',
-diff -ruN gld-1.7/tables.pgsql gld-1.7.2/tables.pgsql
+diff -ru gld-1.7/tables.pgsql gld-1.7.2/tables.pgsql
 --- gld-1.7/tables.pgsql	2004-10-12 14:51:18.000000000 +0200
-+++ gld-1.7.2/tables.pgsql	2017-01-22 14:59:09.000000000 +0100
++++ gld-1.7.2/tables.pgsql	2017-01-25 10:37:53.000000000 +0100
 @@ -1,5 +1,5 @@
  CREATE TABLE greylist (
 -  ip char(16) NOT NULL default '',
